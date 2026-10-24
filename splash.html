@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Safe Exam Browser - Launching</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: radial-gradient(circle at 50% 30%, #1e293b 0%, #0f172a 100%);
+      color: #f8fafc;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: space-between;
+      padding: 32px;
+      user-select: none;
+      overflow: hidden;
+    }
+
+    /* Top Bar */
+    .top-bar {
+      width: 100%;
+      max-width: 900px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 12px;
+      color: #64748b;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(30, 41, 59, 0.8);
+      border: 1px solid rgba(71, 85, 105, 0.5);
+      padding: 6px 14px;
+      border-radius: 9999px;
+      color: #38bdf8;
+      font-size: 11px;
+    }
+    .pulse-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #10b981;
+      box-shadow: 0 0 10px #10b981;
+      animation: pulse 1.5s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.85); }
+    }
+
+    /* Center Content */
+    .center-content {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      max-width: 480px;
+      width: 100%;
+    }
+
+    /* Shield Icon with animated rings */
+    .icon-wrapper {
+      position: relative;
+      width: 96px;
+      height: 96px;
+      margin-bottom: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .icon-ring {
+      position: absolute;
+      inset: -8px;
+      border-radius: 50%;
+      border: 2px solid transparent;
+      border-top-color: #3b82f6;
+      border-right-color: #38bdf8;
+      animation: spin 1.8s linear infinite;
+    }
+    .icon-ring-outer {
+      position: absolute;
+      inset: -18px;
+      border-radius: 50%;
+      border: 1px dashed rgba(59, 130, 246, 0.35);
+      animation: spin-reverse 8s linear infinite;
+    }
+    .icon-box {
+      width: 80px;
+      height: 80px;
+      background: linear-gradient(135deg, #1d4ed8 0%, #1e3a8a 100%);
+      border: 2px solid rgba(96, 165, 250, 0.5);
+      border-radius: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 10px 25px -5px rgba(29, 78, 216, 0.5);
+    }
+    .icon-box svg {
+      width: 42px;
+      height: 42px;
+      fill: none;
+      stroke: #ffffff;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    @keyframes spin-reverse {
+      to { transform: rotate(-360deg); }
+    }
+
+    h1 {
+      font-size: 24px;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+      color: #ffffff;
+      margin-bottom: 8px;
+    }
+    .subtitle {
+      font-size: 13px;
+      color: #94a3b8;
+      margin-bottom: 32px;
+      font-weight: 500;
+    }
+
+    /* Progress bar */
+    .progress-bar-container {
+      width: 100%;
+      height: 6px;
+      background: rgba(30, 41, 59, 0.9);
+      border-radius: 9999px;
+      overflow: hidden;
+      margin-bottom: 16px;
+      border: 1px solid rgba(51, 65, 85, 0.6);
+    }
+    .progress-bar {
+      height: 100%;
+      width: 35%;
+      background: linear-gradient(90deg, #3b82f6, #06b6d4, #10b981);
+      border-radius: 9999px;
+      animation: progress-indeterminate 1.8s ease-in-out infinite;
+    }
+    @keyframes progress-indeterminate {
+      0% { transform: translateX(-100%); width: 25%; }
+      50% { width: 60%; }
+      100% { transform: translateX(350%); width: 25%; }
+    }
+
+    .status-text {
+      font-size: 13px;
+      color: #cbd5e1;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .spinner-sm {
+      width: 14px;
+      height: 14px;
+      border: 2px solid rgba(148, 163, 184, 0.3);
+      border-top-color: #38bdf8;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    /* Bottom Info & Exit Button */
+    .bottom-bar {
+      width: 100%;
+      max-width: 900px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-top: 1px solid rgba(51, 65, 85, 0.6);
+      padding-top: 20px;
+      font-size: 12px;
+      color: #64748b;
+    }
+    .hotkey-pill {
+      background: #1e293b;
+      color: #cbd5e1;
+      padding: 3px 8px;
+      border-radius: 6px;
+      font-family: monospace;
+      font-weight: bold;
+      border: 1px solid #475569;
+    }
+    .exit-btn {
+      background: rgba(239, 68, 68, 0.15);
+      border: 1px solid rgba(239, 68, 68, 0.35);
+      color: #fca5a5;
+      padding: 8px 18px;
+      border-radius: 10px;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.2s;
+    }
+    .exit-btn:hover {
+      background: #ef4444;
+      color: #ffffff;
+      border-color: #ef4444;
+      transform: translateY(-1px);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top Status Banner -->
+  <div class="top-bar">
+    <div class="badge">
+      <span class="pulse-dot"></span>
+      <span>KIOSK LOCKDOWN ACTIVE</span>
+    </div>
+    <span>Safe Exam Browser Engine • v1.0.0</span>
+  </div>
+
+  <!-- Center Loader -->
+  <div class="center-content">
+    <div class="icon-wrapper">
+      <div class="icon-ring-outer"></div>
+      <div class="icon-ring"></div>
+      <div class="icon-box">
+        <svg viewBox="0 0 24 24">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+          <path d="m9 12 2 2 4-4"/>
+        </svg>
+      </div>
+    </div>
+
+    <h1>SAFE EXAM BROWSER</h1>
+    <p class="subtitle">Secure Examination & Evaluation Environment</p>
+
+    <!-- Progress Indicator -->
+    <div class="progress-bar-container">
+      <div class="progress-bar"></div>
+    </div>
+
+    <div class="status-text" id="statusMessage">
+      <span class="spinner-sm"></span>
+      <span>Connecting to Online Examination Portal...</span>
+    </div>
+  </div>
+
+  <!-- Bottom Bar with Shortcut Tips & Instant Exit Button -->
+  <div class="bottom-bar">
+    <div>
+      <span>Emergency Exit: Press </span>
+      <span class="hotkey-pill">Ctrl + Q</span>
+      <span> or </span>
+      <span class="hotkey-pill">Esc</span>
+    </div>
+
+    <button type="button" class="exit-btn" onclick="exitKiosk()">
+      <span>✕ Quit Safe Browser</span>
+    </button>
+  </div>
+
+  <script>
+    const messages = [
+      "Connecting to Online Examination Portal...",
+      "Locking Operating System Shortcuts...",
+      "Verifying Institutional Certificate...",
+      "Setting Up Anti-Cheat Workspace..."
+    ];
+    let msgIndex = 0;
+    const statusEl = document.getElementById('statusMessage');
+
+    setInterval(() => {
+      msgIndex = (msgIndex + 1) % messages.length;
+      if (statusEl) {
+        statusEl.innerHTML = `<span class="spinner-sm"></span><span>${messages[msgIndex]}</span>`;
+      }
+    }, 1800);
+
+    function exitKiosk() {
+      if (window.safeExamBrowser && window.safeExamBrowser.requestQuit) {
+        window.safeExamBrowser.requestQuit('exit2026');
+      } else {
+        window.close();
+      }
+    }
+  </script>
+</body>
+</html>
