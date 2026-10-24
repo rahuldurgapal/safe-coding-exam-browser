@@ -9,7 +9,7 @@ Designed for high-stakes laboratory and university assessments across **Windows,
 ## 🌟 Key Architecture & Capabilities
 
 ### 1. 🔄 Instant Cloud Auto-Updates (Zero Re-Downloads)
-- The Safe Browser operates as an ultra-secure **Cloud Web Shell** pointing to your live production portal (`https://coding-fingure-student-portal.vercel.app`).
+- The Safe Browser operates as an ultra-secure **Cloud Web Shell** pointing to your live production assessment portal.
 - **How Updates Work:** Whenever you push changes to GitHub and Vercel deploys, the next time a student opens the Safe Browser, **it automatically loads the latest version in real-time.**
 - Students only need to install or download the desktop app **once per academic session**.
 

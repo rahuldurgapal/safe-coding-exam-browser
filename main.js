@@ -23,7 +23,7 @@ if (process.platform === 'linux') {
 }
 
 // 1. Configuration & Constants
-const DEFAULT_PORTAL_URL = 'https://coding-fingure-student-portal.vercel.app';
+const DEFAULT_PORTAL_URL = process.env.EXAM_PORTAL_URL || Buffer.from('aHR0cHM6Ly9jb2RpbmctZmluZ3VyZS1zdHVkZW50LXBvcnRhbC52ZXJjZWwuYXBw', 'base64').toString('utf8');
 const SEB_TOKEN = 'SEB-SECURE-EXAM-GUARD-2026';
 const INVIGILATOR_EXIT_PASSWORD = process.env.SEB_EXIT_PASSWORD || 'exit2026';
 
@@ -178,14 +178,24 @@ function createWindow() {
 
   // Prevent navigating outside exam domain
   mainWindow.webContents.on('will-navigate', (event, url) => {
-    const isAllowed = 
-      url.startsWith('https://coding-fingure-student-portal.vercel.app') ||
-      url.startsWith('https://backend-889m.onrender.com') ||
-      url.startsWith('http://localhost') ||
-      url.startsWith('file://');
+    try {
+      const parsedUrl = new URL(url);
+      const targetHost = new URL(TARGET_URL).hostname;
+      const backendHost = new URL(Buffer.from('aHR0cHM6Ly9iYWNrZW5kLTg4OW0ub25yZW5kZXIuY29t', 'base64').toString('utf8')).hostname;
 
-    if (!isAllowed) {
-      console.warn(`[SafeExamBrowser] Blocked navigation to unauthorized external URL: ${url}`);
+      const isAllowed = 
+        parsedUrl.hostname === targetHost ||
+        parsedUrl.hostname.endsWith(targetHost) ||
+        parsedUrl.hostname === backendHost ||
+        parsedUrl.hostname === 'localhost' ||
+        parsedUrl.hostname === '127.0.0.1' ||
+        url.startsWith('file://');
+
+      if (!isAllowed) {
+        console.warn(`[SafeExamBrowser] Blocked navigation to unauthorized external URL: ${url}`);
+        event.preventDefault();
+      }
+    } catch (_) {
       event.preventDefault();
     }
   });

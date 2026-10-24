@@ -7,7 +7,6 @@
     "name": "Rahul Durgapal",
     "email": "rahuldurgapal191@gmail.com"
   },
-  "homepage": "https://coding-fingure-student-portal.vercel.app",
   "license": "ISC",
   "scripts": {
     "start": "electron .",
