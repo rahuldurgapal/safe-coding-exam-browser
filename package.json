@@ -24,7 +24,8 @@
     },
     "win": {
       "target": [
-        "zip"
+        "nsis",
+        "portable"
       ],
       "signAndEditExecutable": false,
       "icon": "assets/icon.png",
