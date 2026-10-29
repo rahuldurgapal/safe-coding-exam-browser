@@ -30,6 +30,7 @@
       "offline.html",
       "vm-detected.html",
       "vm-detector.js",
+      "os-lockdown.js",
       "package.json",
       "!windows/**",
       "!dist/**"

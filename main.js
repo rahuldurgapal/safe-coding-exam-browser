@@ -3,13 +3,13 @@
  * 
  * Production-grade desktop secure kiosk container for Online Coding Examinations.
  * Features:
+ * - Full OS-Level Keyboard Lockdown (Blocks Windows Key, Start Menu, Alt+Tab, Task Manager)
+ * - Screen-Saver Z-Order Level (Places exam window above OS taskbar & flyouts)
  * - Anti-VM & Virtual Machine Detection (Blocks VirtualBox, VMware, Hyper-V, QEMU)
  * - Zero-Hang Instant Clean Termination (Fixes "Safe exam browser not responding / force quit")
  * - Instant Animated Splash Loader & Fallback Offline Screen
  * - Single Dialog Lock (Prevents multiple popups stacking)
- * - Full OS Kiosk Lockdown
- * - Dual-Monitor Detection
- * - Background Process Guard
+ * - Dual-Monitor Detection & Background Process Guard
  * - Cross-Platform (Windows .exe, macOS .dmg, Linux .AppImage)
  */
 
@@ -17,6 +17,7 @@ const { app, BrowserWindow, globalShortcut, screen, dialog, ipcMain, Menu } = re
 const path = require('path');
 const { exec } = require('child_process');
 const { detectVirtualMachineSync, detectVirtualMachineAsync } = require('./vm-detector');
+const { enableOSLockdown, disableOSLockdown } = require('./os-lockdown');
 
 // Linux sandbox compatibility fix (Ubuntu 22.04 / 24.04 AppArmor & SUID sandbox)
 if (process.platform === 'linux') {
@@ -55,11 +56,6 @@ if (!gotTheLock) {
 
 /**
  * Clean & Instant Zero-Hang Termination
- * Completely eliminates the OS "Application Not Responding / Force Quit" dialog by:
- * 1. Clearing intervals and global shortcuts immediately
- * 2. Removing window close/blur and will-prevent-unload listeners to avoid event deadlocks
- * 3. Hiding and destroying the window directly (avoiding heavy async Kiosk/Fullscreen transitions during exit)
- * 4. Yielding to event loop via setImmediate before final process exit
  */
 function forceExitNow() {
   if (isTerminating) return;
@@ -67,21 +63,28 @@ function forceExitNow() {
 
   console.log('[SafeExamBrowser] Instant zero-hang termination initiated...');
 
+  // 1. Restore OS-level keys and policies (Windows key, Task Manager, GNOME overlay key)
+  try {
+    disableOSLockdown();
+  } catch (_) {}
+
+  // 2. Clear background sweep interval
   if (processSweepInterval) {
     clearInterval(processSweepInterval);
     processSweepInterval = null;
   }
 
+  // 3. Unregister all global shortcuts
   try {
     globalShortcut.unregisterAll();
   } catch (_) {}
 
+  // 4. Immediately hide and destroy window without triggering beforeunload / transition hangs
   if (mainWindow && !mainWindow.isDestroyed()) {
     try {
       mainWindow.removeAllListeners('close');
       mainWindow.removeAllListeners('blur');
       mainWindow.webContents.removeAllListeners('will-prevent-unload');
-      // Hide instantly clears the screen in 0ms without waiting for window manager redraw
       mainWindow.hide();
       mainWindow.destroy();
     } catch (_) {}
@@ -123,6 +126,16 @@ function createWindow() {
   });
 
   Menu.setApplicationMenu(null);
+
+  // Apply elevated screen-saver Z-order level in production (covers Windows taskbar & Start Menu)
+  if (!isDev) {
+    mainWindow.setAlwaysOnTop(true, 'screen-saver', 1);
+    mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    // Protect window from external screen recording & screenshots (OBS, Snipping Tool, GameBar)
+    try {
+      mainWindow.setContentProtection(true);
+    } catch (_) {}
+  }
 
   // Set Custom Handshake User-Agent so web portal & backend recognize this Safe Browser
   const defaultUA = mainWindow.webContents.getUserAgent();
@@ -175,17 +188,32 @@ function createWindow() {
 
   // Fallback to offline page if network disconnects
   mainWindow.webContents.on('did-fail-load', (_event, errorCode) => {
-    // -3 is aborted (e.g. redirect), ignore it
     if (errorCode !== -3 && mainWindow && !mainWindow.isDestroyed() && !isVmBlocked) {
       console.warn(`[SafeExamBrowser] Page load failed (${errorCode}), showing offline screen.`);
       mainWindow.loadFile(path.join(__dirname, 'offline.html'));
     }
   });
 
-  // Catch in-window key events (e.g. Escape or Ctrl+Q)
+  // Catch in-window key events (e.g. Escape, Ctrl+Q, Meta / Windows Key)
   let lastEscTime = 0;
   mainWindow.webContents.on('before-input-event', (event, input) => {
     if (input.type !== 'keyDown') return;
+
+    // Suppress standalone Windows / Meta / Super keys immediately
+    if (input.key === 'Meta' || input.key === 'OS' || input.code === 'MetaLeft' || input.code === 'MetaRight') {
+      event.preventDefault();
+      return;
+    }
+
+    // Suppress Alt+Tab, Alt+Esc, Ctrl+Esc from within Chromium
+    if (input.alt && (input.key === 'Tab' || input.key === 'Escape')) {
+      event.preventDefault();
+      return;
+    }
+    if (input.control && input.key === 'Escape') {
+      event.preventDefault();
+      return;
+    }
 
     // Ctrl+Q or Cmd+Q
     if ((input.control || input.meta) && input.key.toLowerCase() === 'q') {
@@ -250,14 +278,16 @@ function createWindow() {
   // Check Dual Monitor on startup & dynamically
   checkMonitorSetup();
 
-  // Retain window focus in kiosk mode so internal clicks never leave the window unfocused
+  // Aggressive instant focus lock: Pulls focus back immediately, instantly collapsing any OS flyout/menu
   mainWindow.on('blur', () => {
     if (!isDev && mainWindow && !mainWindow.isDestroyed() && !isExitDialogOpen && !isTerminating) {
-      setTimeout(() => {
+      setImmediate(() => {
         if (mainWindow && !mainWindow.isDestroyed() && !isExitDialogOpen && !isTerminating) {
+          mainWindow.show();
           mainWindow.focus();
+          mainWindow.moveTop();
         }
-      }, 50);
+      });
     }
   });
 
@@ -268,10 +298,8 @@ function createWindow() {
 
 /**
  * 2. Interactive Safe Exit Confirmation Dialog
- * Guarded against multi-popup stacking and exits cleanly without freezing
  */
 async function promptExitDialog() {
-  // If dialog is already open or already terminating, do not open duplicates!
   if (isExitDialogOpen || isTerminating) return;
   isExitDialogOpen = true;
 
@@ -293,7 +321,6 @@ async function promptExitDialog() {
     });
 
     if (response === 1) {
-      // Allow dialog message pump to complete unwinding cleanly
       setImmediate(() => {
         forceExitNow();
       });
@@ -309,7 +336,6 @@ async function promptExitDialog() {
 
 /**
  * 3. Monitor Setup Guard
- * Prevents multiple monitors, projectors, or HDMI splitters
  */
 function checkMonitorSetup() {
   const displays = screen.getAllDisplays();
@@ -345,7 +371,7 @@ const PROHIBITED_PROCESSES = [
 function checkProhibitedProcesses() {
   if (isDev || isTerminating) return;
 
-  // Background Anti-VM check (in case user loaded VM guest additions mid-session)
+  // Background Anti-VM check
   if (!isVmBlocked) {
     detectVirtualMachineAsync((vmRes) => {
       if (vmRes.isVM && mainWindow && !mainWindow.isDestroyed() && !isVmBlocked) {
@@ -401,9 +427,21 @@ function registerShortcuts() {
 
   if (isDev) return;
 
-  // Block dangerous navigation, refresh, and inspect shortcuts
+  // Comprehensive OS-Level Blocked Shortcuts
   const blockedKeys = [
     'Alt+Tab',
+    'Super+Tab',
+    'Ctrl+Esc',
+    'Alt+Esc',
+    'Super+D',
+    'Super+E',
+    'Super+R',
+    'Super+A',
+    'Super+S',
+    'Super+X',
+    'Super+I',
+    'Super+L',
+    'Ctrl+Shift+Escape',
     'CommandOrControl+R',
     'CommandOrControl+Shift+R',
     'F5',
@@ -446,6 +484,11 @@ ipcMain.handle('seb-trigger-exit-prompt', async () => {
 
 // App Lifecycle
 app.whenReady().then(() => {
+  // Activate Hardware & OS-level lockdown policies (Windows Key, GNOME overlay, Task Manager)
+  if (!isDev) {
+    enableOSLockdown();
+  }
+
   createWindow();
   registerShortcuts();
 
@@ -463,6 +506,7 @@ app.whenReady().then(() => {
 
 app.on('before-quit', () => {
   isTerminating = true;
+  disableOSLockdown();
 });
 
 app.on('will-quit', () => {
