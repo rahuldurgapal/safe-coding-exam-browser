@@ -22,6 +22,18 @@
     "directories": {
       "output": "dist"
     },
+    "files": [
+      "assets/**/*",
+      "main.js",
+      "preload.js",
+      "splash.html",
+      "offline.html",
+      "vm-detected.html",
+      "vm-detector.js",
+      "package.json",
+      "!windows/**",
+      "!dist/**"
+    ],
     "win": {
       "target": [
         "nsis",

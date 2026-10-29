@@ -3,8 +3,9 @@
  * 
  * Production-grade desktop secure kiosk container for Online Coding Examinations.
  * Features:
- * - Instant Animated Splash Loader
- * - Reliable 1-Click Exit Dialog (Ctrl+Q, Alt+F4, or Esc) with zero-hang force termination
+ * - Anti-VM & Virtual Machine Detection (Blocks VirtualBox, VMware, Hyper-V, QEMU)
+ * - Zero-Hang Instant Clean Termination (Fixes "Safe exam browser not responding / force quit")
+ * - Instant Animated Splash Loader & Fallback Offline Screen
  * - Single Dialog Lock (Prevents multiple popups stacking)
  * - Full OS Kiosk Lockdown
  * - Dual-Monitor Detection
@@ -15,6 +16,7 @@
 const { app, BrowserWindow, globalShortcut, screen, dialog, ipcMain, Menu } = require('electron');
 const path = require('path');
 const { exec } = require('child_process');
+const { detectVirtualMachineSync, detectVirtualMachineAsync } = require('./vm-detector');
 
 // Linux sandbox compatibility fix (Ubuntu 22.04 / 24.04 AppArmor & SUID sandbox)
 if (process.platform === 'linux') {
@@ -35,14 +37,16 @@ const TARGET_URL = customUrlArg ? customUrlArg.split('=')[1] : DEFAULT_PORTAL_UR
 let mainWindow = null;
 let processSweepInterval = null;
 let isExitDialogOpen = false;
+let isTerminating = false;
+let isVmBlocked = false;
 
 // Ensure only a single instance runs
 const gotTheLock = app.requestSingleInstanceLock();
 if (!gotTheLock) {
-  app.quit();
+  app.exit(0);
 } else {
   app.on('second-instance', () => {
-    if (mainWindow) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.focus();
     }
@@ -50,30 +54,49 @@ if (!gotTheLock) {
 }
 
 /**
- * Clean & Instant Termination
- * Bypasses any modal loops, releases kiosk mode immediately, and exits process
+ * Clean & Instant Zero-Hang Termination
+ * Completely eliminates the OS "Application Not Responding / Force Quit" dialog by:
+ * 1. Clearing intervals and global shortcuts immediately
+ * 2. Removing window close/blur and will-prevent-unload listeners to avoid event deadlocks
+ * 3. Hiding and destroying the window directly (avoiding heavy async Kiosk/Fullscreen transitions during exit)
+ * 4. Yielding to event loop via setImmediate before final process exit
  */
-function terminateKioskImmediately() {
-  console.log('[SafeExamBrowser] Force-terminating kiosk and exiting immediately...');
+function forceExitNow() {
+  if (isTerminating) return;
+  isTerminating = true;
+
+  console.log('[SafeExamBrowser] Instant zero-hang termination initiated...');
+
   if (processSweepInterval) {
     clearInterval(processSweepInterval);
     processSweepInterval = null;
   }
+
   try {
     globalShortcut.unregisterAll();
   } catch (_) {}
 
   if (mainWindow && !mainWindow.isDestroyed()) {
     try {
-      mainWindow.setKiosk(false);
-      mainWindow.setFullScreen(false);
-      mainWindow.setAlwaysOnTop(false);
+      mainWindow.removeAllListeners('close');
+      mainWindow.removeAllListeners('blur');
+      mainWindow.webContents.removeAllListeners('will-prevent-unload');
+      // Hide instantly clears the screen in 0ms without waiting for window manager redraw
+      mainWindow.hide();
       mainWindow.destroy();
     } catch (_) {}
+    mainWindow = null;
   }
 
-  // Instant clean exit
-  app.exit(0);
+  try {
+    app.releaseSingleInstanceLock();
+  } catch (_) {}
+
+  // Yield to message loop so native Win32/GTK dialog teardown unwinds completely
+  setImmediate(() => {
+    try { app.exit(0); } catch (_) {}
+    try { process.exit(0); } catch (_) {}
+  });
 }
 
 function createWindow() {
@@ -114,13 +137,37 @@ function createWindow() {
     callback({ requestHeaders: details.requestHeaders });
   });
 
+  // Handle will-prevent-unload: Prevent web page (e.g. beforeunload) from hanging window closure
+  mainWindow.webContents.on('will-prevent-unload', (event) => {
+    event.preventDefault();
+  });
+
+  // Intercept window close attempts (Alt+F4, OS close, taskbar close)
+  mainWindow.on('close', (event) => {
+    if (isTerminating) return;
+    event.preventDefault();
+    promptExitDialog();
+  });
+
+  // STEP 0: ANTI-VM CHECK (Check if running inside VirtualBox, VMware, Hyper-V, QEMU)
+  const vmCheck = detectVirtualMachineSync();
+  if (vmCheck.isVM && !isDev) {
+    console.warn('[SafeExamBrowser] BLOCKED: Virtual Machine Detected on launch!', vmCheck.details);
+    isVmBlocked = true;
+    const detailsEncoded = encodeURIComponent(vmCheck.details.join(' | '));
+    mainWindow.loadFile(path.join(__dirname, 'vm-detected.html'), {
+      query: { detail: vmCheck.details.join(' | ') }
+    });
+    return;
+  }
+
   // STEP 1: Immediately display the local splash loader screen (0ms delay, no blank screen!)
   console.log('[SafeExamBrowser] Showing splash loader...');
   mainWindow.loadFile(path.join(__dirname, 'splash.html'));
 
   // STEP 2: After a brief smooth animation (1.2s), load the live portal URL
   setTimeout(() => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow && !mainWindow.isDestroyed() && !isVmBlocked) {
       console.log(`[SafeExamBrowser] Connecting to portal: ${TARGET_URL}`);
       mainWindow.loadURL(TARGET_URL);
     }
@@ -129,7 +176,7 @@ function createWindow() {
   // Fallback to offline page if network disconnects
   mainWindow.webContents.on('did-fail-load', (_event, errorCode) => {
     // -3 is aborted (e.g. redirect), ignore it
-    if (errorCode !== -3 && mainWindow && !mainWindow.isDestroyed()) {
+    if (errorCode !== -3 && mainWindow && !mainWindow.isDestroyed() && !isVmBlocked) {
       console.warn(`[SafeExamBrowser] Page load failed (${errorCode}), showing offline screen.`);
       mainWindow.loadFile(path.join(__dirname, 'offline.html'));
     }
@@ -205,9 +252,9 @@ function createWindow() {
 
   // Retain window focus in kiosk mode so internal clicks never leave the window unfocused
   mainWindow.on('blur', () => {
-    if (!isDev && mainWindow && !mainWindow.isDestroyed() && !isExitDialogOpen) {
+    if (!isDev && mainWindow && !mainWindow.isDestroyed() && !isExitDialogOpen && !isTerminating) {
       setTimeout(() => {
-        if (mainWindow && !mainWindow.isDestroyed() && !isExitDialogOpen) {
+        if (mainWindow && !mainWindow.isDestroyed() && !isExitDialogOpen && !isTerminating) {
           mainWindow.focus();
         }
       }, 50);
@@ -221,16 +268,16 @@ function createWindow() {
 
 /**
  * 2. Interactive Safe Exit Confirmation Dialog
- * Guarded against multi-popup stacking and force-terminates immediately on Exit click
+ * Guarded against multi-popup stacking and exits cleanly without freezing
  */
 async function promptExitDialog() {
-  // If dialog is already open, do not open duplicates!
-  if (isExitDialogOpen) return;
+  // If dialog is already open or already terminating, do not open duplicates!
+  if (isExitDialogOpen || isTerminating) return;
   isExitDialogOpen = true;
 
   try {
     if (!mainWindow || mainWindow.isDestroyed()) {
-      terminateKioskImmediately();
+      forceExitNow();
       return;
     }
 
@@ -239,17 +286,22 @@ async function promptExitDialog() {
       buttons: ['Cancel (Resume Exam)', 'Exit Safe Exam Browser'],
       defaultId: 0,
       cancelId: 0,
+      noLink: true,
       title: 'Exit Safe Exam Browser',
       message: 'Quit Safe Exam Browser?',
       detail: 'Are you sure you want to exit the examination kiosk?\n\n• For Students: Unfinished answers may not be saved.\n• For Invigilators / Testers: Click "Exit Safe Exam Browser" to close.'
     });
 
     if (response === 1) {
-      terminateKioskImmediately();
+      // Allow dialog message pump to complete unwinding cleanly
+      setImmediate(() => {
+        forceExitNow();
+      });
+      return;
     }
   } catch (err) {
     console.error('[SafeExamBrowser] Exit dialog error:', err);
-    terminateKioskImmediately();
+    forceExitNow();
   } finally {
     isExitDialogOpen = false;
   }
@@ -261,7 +313,7 @@ async function promptExitDialog() {
  */
 function checkMonitorSetup() {
   const displays = screen.getAllDisplays();
-  if (displays.length > 1 && !isDev && mainWindow && !mainWindow.isDestroyed()) {
+  if (displays.length > 1 && !isDev && mainWindow && !mainWindow.isDestroyed() && !isTerminating) {
     dialog.showMessageBox(mainWindow, {
       type: 'warning',
       title: 'Dual-Monitor Violation Detected',
@@ -275,7 +327,7 @@ function checkMonitorSetup() {
 }
 
 /**
- * 4. Prohibited Remote Desktop & Screen Sharing Process Guard
+ * 4. Prohibited Remote Desktop & Screen Sharing Process Guard + Continuous Anti-VM Check
  */
 const PROHIBITED_PROCESSES = [
   'anydesk',
@@ -291,18 +343,32 @@ const PROHIBITED_PROCESSES = [
 ];
 
 function checkProhibitedProcesses() {
-  if (isDev) return;
+  if (isDev || isTerminating) return;
+
+  // Background Anti-VM check (in case user loaded VM guest additions mid-session)
+  if (!isVmBlocked) {
+    detectVirtualMachineAsync((vmRes) => {
+      if (vmRes.isVM && mainWindow && !mainWindow.isDestroyed() && !isVmBlocked) {
+        console.warn('[SafeExamBrowser] BLOCKED: Virtual Machine Detected in background check!', vmRes.details);
+        isVmBlocked = true;
+        mainWindow.loadFile(path.join(__dirname, 'vm-detected.html'), {
+          query: { detail: vmRes.details.join(' | ') }
+        });
+        return;
+      }
+    });
+  }
 
   const isWin = process.platform === 'win32';
   const cmd = isWin ? 'tasklist' : 'ps -eo comm';
 
   exec(cmd, { timeout: 3000 }, (err, stdout) => {
-    if (err || !stdout) return;
+    if (err || !stdout || isTerminating) return;
 
     const lowerOutput = stdout.toLowerCase();
     const detected = PROHIBITED_PROCESSES.find(proc => lowerOutput.includes(proc));
 
-    if (detected && mainWindow && !mainWindow.isDestroyed()) {
+    if (detected && mainWindow && !mainWindow.isDestroyed() && !isTerminating) {
       mainWindow.webContents.send('seb-security-alert', {
         type: 'PROHIBITED_PROCESS',
         message: `Unauthorized application (${detected}) is running in the background. Please close it immediately.`
@@ -367,8 +433,8 @@ function registerShortcuts() {
 
 // 6. IPC Handlers
 ipcMain.handle('seb-request-quit', async (_event, password) => {
-  if (password === INVIGILATOR_EXIT_PASSWORD || password === 'exit2026' || isDev) {
-    terminateKioskImmediately();
+  if (password === INVIGILATOR_EXIT_PASSWORD || password === 'exit2026' || isDev || isVmBlocked) {
+    forceExitNow();
     return { success: true };
   }
   return promptExitDialog();
@@ -387,7 +453,7 @@ app.whenReady().then(() => {
   screen.on('display-added', checkMonitorSetup);
   screen.on('display-removed', checkMonitorSetup);
 
-  // Background process guard every 8 seconds
+  // Background process & anti-VM guard every 8 seconds
   processSweepInterval = setInterval(checkProhibitedProcesses, 8000);
 
   app.on('activate', () => {
@@ -395,15 +461,21 @@ app.whenReady().then(() => {
   });
 });
 
+app.on('before-quit', () => {
+  isTerminating = true;
+});
+
 app.on('will-quit', () => {
-  globalShortcut.unregisterAll();
-  if (processSweepInterval) clearInterval(processSweepInterval);
+  forceExitNow();
 });
 
 app.on('window-all-closed', () => {
-  terminateKioskImmediately();
+  forceExitNow();
 });
 
 // Handle SIGINT / SIGTERM cleanly from terminal (Ctrl + C)
-process.on('SIGINT', terminateKioskImmediately);
-process.on('SIGTERM', terminateKioskImmediately);
+process.on('SIGINT', forceExitNow);
+process.on('SIGTERM', forceExitNow);
+process.on('uncaughtException', (err) => {
+  console.error('[SafeExamBrowser] Uncaught Exception:', err);
+});
