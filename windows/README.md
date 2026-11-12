@@ -32,4 +32,4 @@ When opening for the first time, Windows Defender SmartScreen may display:
 * **Anti-VM Protection:** Strictly blocks execution inside Virtual Machines (Oracle VM VirtualBox, VMware, Hyper-V, QEMU). Candidates must run directly on physical hardware (Host OS).
 * **OS Kiosk Lockdown:** Locks screen, disables Alt+Tab, Task Switcher, and developer inspect tools.
 * **Dual-Monitor Detection:** Prevents external HDMI screens or secondary monitors.
-* **Zero-Hang Exit:** Press **`Ctrl + Q`**, **`Alt + F4`**, or double-press **`Esc`** to confirm exit cleanly with zero freezing.
+* **Zero-Hang Exit:** Press **`Ctrl + Q`**, **`Alt + F4`**, or **`Esc`** once to open the exit confirmation popup (press again to close it and resume).
