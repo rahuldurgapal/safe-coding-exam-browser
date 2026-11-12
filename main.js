@@ -13,7 +13,7 @@
  * - Cross-Platform (Windows .exe, macOS .dmg, Linux .AppImage)
  */
 
-const { app, BrowserWindow, globalShortcut, screen, dialog, ipcMain, Menu } = require('electron');
+const { app, BrowserWindow, WebContentsView, globalShortcut, screen, dialog, ipcMain, Menu } = require('electron');
 const path = require('path');
 const { exec } = require('child_process');
 const { detectVirtualMachineSync, detectVirtualMachineAsync } = require('./vm-detector');
@@ -36,10 +36,13 @@ const customUrlArg = process.argv.find(arg => arg.startsWith('--url='));
 const TARGET_URL = customUrlArg ? customUrlArg.split('=')[1] : DEFAULT_PORTAL_URL;
 
 let mainWindow = null;
+let exitView = null;
 let processSweepInterval = null;
+let splashTimer = null;
 let isExitDialogOpen = false;
 let isTerminating = false;
 let isVmBlocked = false;
+let lastExitToggleAt = 0;
 
 // Ensure only a single instance runs
 const gotTheLock = app.requestSingleInstanceLock();
@@ -63,30 +66,57 @@ function forceExitNow() {
 
   console.log('[SafeExamBrowser] Instant zero-hang termination initiated...');
 
-  // 1. Restore OS-level keys and policies (Windows key, Task Manager, GNOME overlay key)
+  // 1. Restore OS-level keys and policies asynchronously (non-blocking)
   try {
     disableOSLockdown();
   } catch (_) {}
 
-  // 2. Clear background sweep interval
+  // 2. Clear background timers and display listeners
+  if (splashTimer) {
+    clearTimeout(splashTimer);
+    splashTimer = null;
+  }
   if (processSweepInterval) {
     clearInterval(processSweepInterval);
     processSweepInterval = null;
   }
+  try {
+    screen.removeListener('display-added', checkMonitorSetup);
+    screen.removeListener('display-removed', checkMonitorSetup);
+  } catch (_) {}
 
   // 3. Unregister all global shortcuts
   try {
     globalShortcut.unregisterAll();
   } catch (_) {}
 
-  // 4. Immediately hide and destroy window without triggering beforeunload / transition hangs
+  // 4. Detach exit overlay cleanly if open
+  if (exitView) {
+    try {
+      exitView.setVisible(false);
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.contentView.removeChildView(exitView);
+      }
+      if (exitView.webContents && !exitView.webContents.isDestroyed()) {
+        exitView.webContents.close({ waitForBeforeUnload: false });
+      }
+    } catch (_) {}
+    exitView = null;
+  }
+
+  // 5. Release kiosk/fullscreen state and hide window immediately before exiting
   if (mainWindow && !mainWindow.isDestroyed()) {
     try {
       mainWindow.removeAllListeners('close');
       mainWindow.removeAllListeners('blur');
-      mainWindow.webContents.removeAllListeners('will-prevent-unload');
+      mainWindow.removeAllListeners('resize');
+      mainWindow.removeAllListeners('closed');
+      if (mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
+        mainWindow.webContents.removeAllListeners('will-prevent-unload');
+      }
+      mainWindow.setAlwaysOnTop(false);
+      if (mainWindow.isKiosk()) mainWindow.setKiosk(false);
       mainWindow.hide();
-      mainWindow.destroy();
     } catch (_) {}
     mainWindow = null;
   }
@@ -95,11 +125,89 @@ function forceExitNow() {
     app.releaseSingleInstanceLock();
   } catch (_) {}
 
-  // Yield to message loop so native Win32/GTK dialog teardown unwinds completely
+  // Exit immediately on next tick; fallback timer guarantees zero hang on stubborn WM drivers
   setImmediate(() => {
     try { app.exit(0); } catch (_) {}
-    try { process.exit(0); } catch (_) {}
+    setTimeout(() => {
+      try { process.exit(0); } catch (_) {}
+    }, 400).unref();
   });
+}
+
+function syncExitOverlayBounds() {
+  if (!mainWindow || mainWindow.isDestroyed() || !exitView) return;
+  try {
+    const [width, height] = mainWindow.getContentSize();
+    exitView.setBounds({ x: 0, y: 0, width: Math.max(width, 1), height: Math.max(height, 1) });
+  } catch (_) {}
+}
+
+function attachKeySecurityHandlers(contents) {
+  if (!contents || contents.isDestroyed()) return;
+
+  contents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown') return;
+
+    const keyLower = (input.key || '').toLowerCase();
+    const isQuitShortcut =
+      ((input.control || input.meta) && keyLower === 'q') ||
+      (input.alt && input.key === 'F4') ||
+      input.key === 'Escape';
+
+    // Suppress key repeat on exit keys so holding Esc/Ctrl+Q doesn't flicker modal open/closed
+    if (input.isAutoRepeat && isQuitShortcut) {
+      event.preventDefault();
+      return;
+    }
+
+    // Suppress standalone Windows / Meta / Super keys immediately
+    if (input.key === 'Meta' || input.key === 'OS' || input.code === 'MetaLeft' || input.code === 'MetaRight') {
+      event.preventDefault();
+      return;
+    }
+
+    // Suppress Alt+Tab, Alt+Esc, Ctrl+Esc from within Chromium
+    if (input.alt && (input.key === 'Tab' || input.key === 'Escape')) {
+      event.preventDefault();
+      return;
+    }
+    if (input.control && input.key === 'Escape') {
+      event.preventDefault();
+      return;
+    }
+
+    // Single press toggles Safe Exit Confirmation Popup (1st press opens, 2nd press closes)
+    // Defer via setImmediate so Chromium finishes input dispatch before mutating WebContentsView hierarchy
+    if (isQuitShortcut) {
+      event.preventDefault();
+      setImmediate(() => toggleExitDialog());
+    }
+  });
+}
+
+function initExitOverlay() {
+  if (!mainWindow || mainWindow.isDestroyed() || exitView) return;
+
+  exitView = new WebContentsView({
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      nodeIntegration: false,
+      contextIsolation: true,
+      devTools: isDev,
+      spellcheck: false
+    }
+  });
+
+  try {
+    exitView.setBackgroundColor('#00000000');
+  } catch (_) {}
+
+  exitView.webContents.loadFile(path.join(__dirname, 'exit-modal.html'));
+  attachKeySecurityHandlers(exitView.webContents);
+
+  if (!isDev) {
+    exitView.webContents.on('context-menu', (e) => e.preventDefault());
+  }
 }
 
 function createWindow() {
@@ -110,7 +218,8 @@ function createWindow() {
     width: width || 1920,
     height: height || 1080,
     kiosk: !isDev,               // Full OS Kiosk lockdown in production
-    fullscreen: !isDev,
+    // On macOS, combining fullscreen:true with kiosk:true triggers Space teardown deadlocks
+    fullscreen: isDev ? false : process.platform !== 'darwin',
     alwaysOnTop: !isDev,
     frame: isDev,                // Hide OS frame in production
     autoHideMenuBar: true,
@@ -137,6 +246,9 @@ function createWindow() {
     } catch (_) {}
   }
 
+  // Preload lightweight non-blocking exit confirmation overlay
+  initExitOverlay();
+
   // Set Custom Handshake User-Agent so web portal & backend recognize this Safe Browser
   const defaultUA = mainWindow.webContents.getUserAgent();
   mainWindow.webContents.setUserAgent(
@@ -159,15 +271,19 @@ function createWindow() {
   mainWindow.on('close', (event) => {
     if (isTerminating) return;
     event.preventDefault();
-    promptExitDialog();
+    toggleExitDialog();
   });
+
+  mainWindow.on('resize', syncExitOverlayBounds);
+
+  // Attach single-press exit & anti-escape key handlers before any early load return
+  attachKeySecurityHandlers(mainWindow.webContents);
 
   // STEP 0: ANTI-VM CHECK (Check if running inside VirtualBox, VMware, Hyper-V, QEMU)
   const vmCheck = detectVirtualMachineSync();
   if (vmCheck.isVM && !isDev) {
     console.warn('[SafeExamBrowser] BLOCKED: Virtual Machine Detected on launch!', vmCheck.details);
     isVmBlocked = true;
-    const detailsEncoded = encodeURIComponent(vmCheck.details.join(' | '));
     mainWindow.loadFile(path.join(__dirname, 'vm-detected.html'), {
       query: { detail: vmCheck.details.join(' | ') }
     });
@@ -179,8 +295,9 @@ function createWindow() {
   mainWindow.loadFile(path.join(__dirname, 'splash.html'));
 
   // STEP 2: After a brief smooth animation (1.2s), load the live portal URL
-  setTimeout(() => {
-    if (mainWindow && !mainWindow.isDestroyed() && !isVmBlocked) {
+  splashTimer = setTimeout(() => {
+    splashTimer = null;
+    if (mainWindow && !mainWindow.isDestroyed() && !isVmBlocked && !isTerminating) {
       console.log(`[SafeExamBrowser] Connecting to portal: ${TARGET_URL}`);
       mainWindow.loadURL(TARGET_URL);
     }
@@ -191,52 +308,6 @@ function createWindow() {
     if (errorCode !== -3 && mainWindow && !mainWindow.isDestroyed() && !isVmBlocked) {
       console.warn(`[SafeExamBrowser] Page load failed (${errorCode}), showing offline screen.`);
       mainWindow.loadFile(path.join(__dirname, 'offline.html'));
-    }
-  });
-
-  // Catch in-window key events (e.g. Escape, Ctrl+Q, Meta / Windows Key)
-  let lastEscTime = 0;
-  mainWindow.webContents.on('before-input-event', (event, input) => {
-    if (input.type !== 'keyDown') return;
-
-    // Suppress standalone Windows / Meta / Super keys immediately
-    if (input.key === 'Meta' || input.key === 'OS' || input.code === 'MetaLeft' || input.code === 'MetaRight') {
-      event.preventDefault();
-      return;
-    }
-
-    // Suppress Alt+Tab, Alt+Esc, Ctrl+Esc from within Chromium
-    if (input.alt && (input.key === 'Tab' || input.key === 'Escape')) {
-      event.preventDefault();
-      return;
-    }
-    if (input.control && input.key === 'Escape') {
-      event.preventDefault();
-      return;
-    }
-
-    // Ctrl+Q or Cmd+Q
-    if ((input.control || input.meta) && input.key.toLowerCase() === 'q') {
-      event.preventDefault();
-      promptExitDialog();
-      return;
-    }
-
-    // Alt+F4
-    if (input.alt && input.key === 'F4') {
-      event.preventDefault();
-      promptExitDialog();
-      return;
-    }
-
-    // Double-Esc to trigger exit dialog (prevents single accidental Esc from firing while coding)
-    if (input.key === 'Escape') {
-      const now = Date.now();
-      if (now - lastEscTime < 800) {
-        event.preventDefault();
-        promptExitDialog();
-      }
-      lastEscTime = now;
     }
   });
 
@@ -293,45 +364,89 @@ function createWindow() {
 
   mainWindow.on('closed', () => {
     mainWindow = null;
+    exitView = null;
   });
 }
 
 /**
- * 2. Interactive Safe Exit Confirmation Dialog
+ * 2. Non-Blocking In-Window Safe Exit Confirmation Overlay
+ *    - Zero native GTK/Cocoa modal sheets (eliminates OS "Force Quit or Cancel" hangs)
+ *    - 1st exit press shows modal; 2nd exit press dismisses modal & resumes exam
  */
-async function promptExitDialog() {
-  if (isExitDialogOpen || isTerminating) return;
+function openExitDialog() {
+  if (isExitDialogOpen || isTerminating || !mainWindow || mainWindow.isDestroyed()) return false;
+
+  if (!exitView || !exitView.webContents || exitView.webContents.isDestroyed()) {
+    initExitOverlay();
+  }
+  if (!exitView) return false;
+
   isExitDialogOpen = true;
 
   try {
-    if (!mainWindow || mainWindow.isDestroyed()) {
-      forceExitNow();
-      return;
+    if (mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
+      mainWindow.webContents.send('seb-exit-modal-state', true);
     }
+  } catch (_) {}
 
-    const { response } = await dialog.showMessageBox(mainWindow, {
-      type: 'question',
-      buttons: ['Cancel (Resume Exam)', 'Exit Safe Exam Browser'],
-      defaultId: 0,
-      cancelId: 0,
-      noLink: true,
-      title: 'Exit Safe Exam Browser',
-      message: 'Quit Safe Exam Browser?',
-      detail: 'Are you sure you want to exit the examination kiosk?\n\n• For Students: Unfinished answers may not be saved.\n• For Invigilators / Testers: Click "Exit Safe Exam Browser" to close.'
-    });
-
-    if (response === 1) {
-      setImmediate(() => {
-        forceExitNow();
-      });
-      return;
-    }
+  try {
+    syncExitOverlayBounds();
+    mainWindow.contentView.addChildView(exitView);
+    exitView.setVisible(true);
+    exitView.webContents.focus();
   } catch (err) {
-    console.error('[SafeExamBrowser] Exit dialog error:', err);
-    forceExitNow();
-  } finally {
+    console.error('[SafeExamBrowser] Failed to open exit overlay:', err);
     isExitDialogOpen = false;
+    return false;
   }
+
+  return true;
+}
+
+function closeExitDialog() {
+  if (!isExitDialogOpen) return false;
+  isExitDialogOpen = false;
+
+  if (exitView) {
+    try {
+      exitView.setVisible(false);
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.contentView.removeChildView(exitView);
+      }
+    } catch (_) {}
+  }
+
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    try {
+      mainWindow.focus();
+      if (mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
+        mainWindow.webContents.focus();
+        mainWindow.webContents.send('seb-exit-modal-state', false);
+      }
+    } catch (_) {}
+  }
+
+  return false;
+}
+
+function toggleExitDialog() {
+  if (isTerminating || !mainWindow || mainWindow.isDestroyed()) return isExitDialogOpen;
+
+  // Deduplicate simultaneous globalShortcut + before-input-event triggers for the same physical press
+  const now = Date.now();
+  if (now - lastExitToggleAt < 150) {
+    return isExitDialogOpen;
+  }
+  lastExitToggleAt = now;
+
+  if (isExitDialogOpen) {
+    return closeExitDialog();
+  }
+  return openExitDialog();
+}
+
+function promptExitDialog() {
+  return openExitDialog();
 }
 
 /**
@@ -419,7 +534,7 @@ function registerShortcuts() {
     try {
       globalShortcut.register(key, () => {
         console.log(`[SafeExamBrowser] Exit hotkey pressed: ${key}`);
-        promptExitDialog();
+        toggleExitDialog();
         return false;
       });
     } catch (_) {}
@@ -475,11 +590,21 @@ ipcMain.handle('seb-request-quit', async (_event, password) => {
     forceExitNow();
     return { success: true };
   }
-  return promptExitDialog();
+  return toggleExitDialog();
 });
 
 ipcMain.handle('seb-trigger-exit-prompt', async () => {
-  return promptExitDialog();
+  return toggleExitDialog();
+});
+
+ipcMain.handle('seb-confirm-exit', async () => {
+  forceExitNow();
+  return { success: true };
+});
+
+ipcMain.handle('seb-cancel-exit-modal', async () => {
+  closeExitDialog();
+  return { success: true };
 });
 
 // App Lifecycle
@@ -505,8 +630,7 @@ app.whenReady().then(() => {
 });
 
 app.on('before-quit', () => {
-  isTerminating = true;
-  disableOSLockdown();
+  forceExitNow();
 });
 
 app.on('will-quit', () => {

@@ -27,6 +27,7 @@
       "main.js",
       "preload.js",
       "splash.html",
+      "exit-modal.html",
       "offline.html",
       "vm-detected.html",
       "vm-detector.js",

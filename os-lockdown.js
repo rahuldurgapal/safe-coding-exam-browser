@@ -7,10 +7,22 @@
  * - Cross-Platform: Always-on-top screen-saver Z-order level and content protection
  */
 
-const { exec, execSync } = require('child_process');
+const { exec, spawn } = require('child_process');
 
 let isLockdownActive = false;
 let originalGnomeOverlayKey = null;
+
+function runDetached(command, args) {
+  try {
+    const child = spawn(command, args, {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true
+    });
+    child.on('error', () => {});
+    child.unref();
+  } catch (_) {}
+}
 
 /**
  * Enable OS-Level lockdown for Windows and Linux
@@ -37,16 +49,15 @@ function enableOSLockdown() {
   // 2. LINUX (GNOME / Ubuntu) LOCKDOWN
   if (process.platform === 'linux') {
     try {
-      // Check current overlay key
-      try {
-        originalGnomeOverlayKey = execSync('gsettings get org.gnome.mutter overlay-key', { encoding: 'utf8', timeout: 500 }).trim();
-      } catch (_) {
-        originalGnomeOverlayKey = "'Super'";
-      }
+      exec('gsettings get org.gnome.mutter overlay-key', { encoding: 'utf8', timeout: 800 }, (err, stdout) => {
+        if (!isLockdownActive) return;
+        const trimmed = (!err && stdout) ? stdout.trim() : '';
+        originalGnomeOverlayKey = trimmed || "'Super'";
 
-      // Disable Super (Windows) key in GNOME
-      exec("gsettings set org.gnome.mutter overlay-key ''", () => {});
-      console.log('[OSLockdown] Linux GNOME Super key lock applied.');
+        // Disable Super (Windows) key in GNOME
+        exec("gsettings set org.gnome.mutter overlay-key ''", () => {});
+        console.log('[OSLockdown] Linux GNOME Super key lock applied.');
+      });
     } catch (err) {
       console.warn('[OSLockdown] Linux lock error:', err.message);
     }
@@ -54,7 +65,7 @@ function enableOSLockdown() {
 }
 
 /**
- * Revert all OS-Level changes cleanly on exit
+ * Revert all OS-Level changes cleanly and non-blockingly on exit
  */
 function disableOSLockdown() {
   if (!isLockdownActive) return;
@@ -62,23 +73,17 @@ function disableOSLockdown() {
 
   console.log('[OSLockdown] Restoring OS-level key policies...');
 
-  // 1. REVERT WINDOWS POLICIES
+  // 1. REVERT WINDOWS POLICIES (detached so Electron exits instantaneously)
   if (process.platform === 'win32') {
-    try {
-      execSync('reg delete "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer" /v "NoWinKeys" /f', { stdio: 'ignore', timeout: 800 });
-    } catch (_) {}
-
-    try {
-      execSync('reg delete "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System" /v "DisableTaskMgr" /f', { stdio: 'ignore', timeout: 800 });
-    } catch (_) {}
+    runDetached('reg', ['delete', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer', '/v', 'NoWinKeys', '/f']);
+    runDetached('reg', ['delete', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System', '/v', 'DisableTaskMgr', '/f']);
   }
 
-  // 2. REVERT LINUX SETTINGS
+  // 2. REVERT LINUX SETTINGS (detached so GTK/Wayland event loop never blocks)
   if (process.platform === 'linux') {
-    try {
-      const keyToRestore = (originalGnomeOverlayKey && originalGnomeOverlayKey.includes('Super')) ? originalGnomeOverlayKey : "'Super'";
-      execSync(`gsettings set org.gnome.mutter overlay-key ${keyToRestore}`, { stdio: 'ignore', timeout: 800 });
-    } catch (_) {}
+    const rawKey = (originalGnomeOverlayKey && originalGnomeOverlayKey.includes('Super')) ? originalGnomeOverlayKey : "'Super'";
+    const cleanKey = rawKey.replace(/^'+|'+$/g, '');
+    runDetached('gsettings', ['set', 'org.gnome.mutter', 'overlay-key', cleanKey]);
   }
 }
 

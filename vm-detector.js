@@ -62,10 +62,9 @@ const VM_HARDWARE_STRINGS = [
 ];
 
 /**
- * Fast synchronous check for VM indicators
- * Returns { isVM: boolean, details: string[] }
+ * In-process fast VM checks (MAC OUI + Linux DMI/cpuinfo, no blocking subprocesses)
  */
-function detectVirtualMachineSync() {
+function collectFastVMDetections() {
   const detections = [];
 
   // LAYER 1: Check Network MAC Address OUI (Instant & cross-platform)
@@ -113,6 +112,19 @@ function detectVirtualMachineSync() {
         }
       }
     } catch (_) {}
+  }
+
+  return detections;
+}
+
+/**
+ * Fast synchronous check for VM indicators
+ * Returns { isVM: boolean, details: string[] }
+ */
+function detectVirtualMachineSync() {
+  const detections = collectFastVMDetections();
+
+  if (process.platform === 'linux') {
 
     try {
       const virt = execSync('systemd-detect-virt', { encoding: 'utf8', timeout: 800 }).trim();
@@ -161,34 +173,53 @@ function detectVirtualMachineSync() {
 }
 
 /**
- * Asynchronous deep check including running background processes
+ * Asynchronous deep check including running background processes (zero main-thread blocking)
  */
 function detectVirtualMachineAsync(callback) {
-  // First do the fast sync checks
-  const syncResult = detectVirtualMachineSync();
-  if (syncResult.isVM) {
-    return callback(syncResult);
+  const fastDetections = collectFastVMDetections();
+  if (fastDetections.length > 0) {
+    return callback({
+      isVM: true,
+      details: [...new Set(fastDetections)]
+    });
   }
 
-  // Check background processes
   const isWin = process.platform === 'win32';
   const cmd = isWin ? 'tasklist' : 'ps -eo comm';
 
-  exec(cmd, { timeout: 2500 }, (err, stdout) => {
-    if (err || !stdout) {
-      return callback(syncResult);
-    }
+  const runProcessCheck = (detections) => {
+    exec(cmd, { timeout: 2500 }, (err, stdout) => {
+      if (!err && stdout) {
+        const lowerOutput = stdout.toLowerCase();
+        const detectedProcess = VM_PROCESS_PATTERNS.find(proc => lowerOutput.includes(proc));
+        if (detectedProcess) {
+          detections.push(`VM Guest Process Running: ${detectedProcess}`);
+        }
+      }
 
-    const lowerOutput = stdout.toLowerCase();
-    const detectedProcess = VM_PROCESS_PATTERNS.find(proc => lowerOutput.includes(proc));
+      callback({
+        isVM: detections.length > 0,
+        details: [...new Set(detections)]
+      });
+    });
+  };
 
-    if (detectedProcess) {
-      syncResult.isVM = true;
-      syncResult.details.push(`VM Guest Process Running: ${detectedProcess}`);
-    }
+  if (process.platform === 'linux') {
+    exec('systemd-detect-virt', { encoding: 'utf8', timeout: 1000 }, (err, stdout) => {
+      const detections = [...fastDetections];
+      const virt = (!err && stdout) ? stdout.trim() : '';
+      if (virt && virt !== 'none') {
+        detections.push(`Linux Hypervisor detected: ${virt}`);
+      }
+      if (detections.length > 0) {
+        return callback({ isVM: true, details: [...new Set(detections)] });
+      }
+      runProcessCheck(detections);
+    });
+    return;
+  }
 
-    callback(syncResult);
-  });
+  runProcessCheck([...fastDetections]);
 }
 
 module.exports = {
