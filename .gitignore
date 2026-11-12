@@ -4,6 +4,16 @@ node_modules/
 # Production Builds & Binaries (Over 100MB limit for GitHub)
 dist/
 
+# Source Codebase (Kept locally for building releases; GitHub keeps only Windows downloads)
+/main.js
+/preload.js
+/os-lockdown.js
+/vm-detector.js
+/*.html
+/package.json
+/package-lock.json
+/assets/
+
 # Logs
 *.log
 npm-debug.log*
