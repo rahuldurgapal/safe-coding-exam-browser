@@ -3,6 +3,7 @@ node_modules/
 
 # Production Builds & Binaries (Over 100MB limit for GitHub)
 dist/
+*.AppImage
 
 # Source Codebase (Kept locally for building releases; GitHub keeps only Windows downloads)
 /main.js

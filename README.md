@@ -1,20 +1,26 @@
-# 🛡️ Coding Exam Safe Browser (Windows Download)
+# 🛡️ Coding Exam Safe Browser (Desktop Client Downloads)
 
 Official secure examination kiosk browser for the **Online Coding Assessment Portal**.
 
 ---
 
-## ⬇️ Download for Windows (Windows 10 / 11)
+## ⬇️ Download Executable Files
 
-Open the [`windows/`](./windows/) folder and download one of the two versions below:
+All runnable application executables are stored across the 3 dedicated platform folders:
 
-### 1. ⚡ Portable Version (Recommended — Zero Installation)
-- **File:** [`windows/CodingExamSafeBrowser 1.0.0.exe`](./windows/CodingExamSafeBrowser%201.0.0.exe)
-- Double-click to launch directly. No installation or admin rights required.
+### 1. 🪟 Windows (`windows/` folder)
+Download from [`windows/`](./windows/):
+- **Portable Version (Zero Installation):** `windows/CodingExamSafeBrowser 1.0.0.exe`
+- **1-Click Installer Setup:** `windows/CodingExamSafeBrowser Setup 1.0.0.exe`
 
-### 2. 📦 1-Click Installer Setup
-- **File:** [`windows/CodingExamSafeBrowser Setup 1.0.0.exe`](./windows/CodingExamSafeBrowser%201.0.0.exe)
-- Double-click to install with Desktop & Start Menu shortcuts.
+### 2. 🐧 Linux (`linux/` folder)
+Download from [`linux/`](./linux/):
+- **Debian / Ubuntu Package:** `linux/coding-exam-safe-browser_1.0.0_amd64.deb` (`sudo dpkg -i ...`)
+- **Universal Linux Portable:** `linux/CodingExamSafeBrowser-1.0.0.AppImage` (`chmod +x ...`)
+
+### 3. 🍎 macOS (`mac/` folder)
+Download from [`mac/`](./mac/):
+- **macOS Application Archive:** `mac/CodingExamSafeBrowser-1.0.0-mac.zip` (Extract and drag to Applications)
 
 ---
 
@@ -27,5 +33,5 @@ If Windows Defender SmartScreen shows *"Windows protected your PC"*:
 
 ## 🔑 How to Exit Safe Exam Browser
 - Press **`Ctrl + Q`**, **`Alt + F4`**, or **`Esc`** once to open the exit confirmation popup (`Cancel (Resume Exam)` / `Exit Safe Exam Browser`).
-- Press the exit key again to dismiss the popup and continue the exam.
-- On the initial splash screen, you can also click **`✕ Quit Safe Browser`**.
+- Press the exit key again to dismiss the popup and resume.
+- On the initial splash screen, click **`✕ Quit Safe Browser`**.
