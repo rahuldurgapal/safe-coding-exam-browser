@@ -8,6 +8,7 @@ dist/
 # Source Codebase (Kept locally for building releases; GitHub keeps only Windows downloads)
 /main.js
 /preload.js
+/taskbar-preload.js
 /os-lockdown.js
 /vm-detector.js
 /*.html
