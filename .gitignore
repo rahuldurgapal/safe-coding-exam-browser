@@ -9,6 +9,7 @@ dist/
 /main.js
 /preload.js
 /taskbar-preload.js
+/network-manager.js
 /os-lockdown.js
 /vm-detector.js
 /*.html
